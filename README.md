@@ -216,22 +216,21 @@ Recommended versioning:
 | `APPSTORE_API_KEY_ID` | App Store Connect API key ID (App Manager role) |
 | `APPSTORE_API_ISSUER_ID` | App Store Connect issuer ID |
 | `APPSTORE_API_PRIVATE_KEY` | App Store Connect .p8 private key (full text, not base64) |
-| `ATHENA_API_BASE_URL` | HTTPS API base URL for Release / ingest verification |
+| `ATHENA_API_BASE_URL` | HTTPS API base URL baked into Release builds |
 | `SENTRY_DSN` | Sentry DSN for crash reporting (leave empty to disable) |
-| `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | OIDC Azure login |
-| `DATABASE_URL` | Backend DB connection (migrate/seed jobs) |
 
-**Repository variables** (non-secret Azure resource names for deploy workflows):
+**Variables** (not secrets; set by `TechNToast/techntoast-platform`, don't edit by hand):
 
-| Variable | Purpose |
-|---|---|
-| `AZURE_ACR_NAME` | Azure Container Registry name |
-| `AZURE_RESOURCE_GROUP` | Resource group |
-| `AZURE_CONTAINER_APP_NAME` | Container App name |
-| `AZURE_CONTAINER_APP_ENV` | Container Apps managed environment |
-| `AZURE_MIGRATE_JOB_NAME` | Alembic migration job |
-| `AZURE_SEED_JOB_NAME` | Seed job |
-| `AZURE_INGEST_JOB_NAME` | Daily ingest job |
+| Variable | Scope | Purpose |
+|---|---|---|
+| `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | repo | Azure sign-in (OIDC) |
+| `AZURE_CLIENT_ID` | `dev` environment | Deploy identity for that environment |
+| `LOG_WORKSPACE_ID` | `dev` environment | Shared log workspace for that environment |
+| `TF_STATE_RESOURCE_GROUP` / `TF_STATE_STORAGE_ACCOUNT` | repo | Terraform state (Entra auth, no keys) |
+| `OPERATORS_GROUP_ID` | repo | Entra group that administers the database |
+
+Azure deploys need no secrets: sign-in is OIDC, the registry and database use managed identities,
+and the Hugging Face token lives in Key Vault.
 
 Notes for `ATHENA_API_BASE_URL`:
 
@@ -240,8 +239,8 @@ Notes for `ATHENA_API_BASE_URL`:
 - Do **not** commit the live hostname in source, docs, or workflows.
 
 ## Cost Guardrails
-- Start dev with the low-traffic Terraform profile (`infra/terraform/envs/dev/dev.tfvars.example`) and scale to zero where safe.
-- Keep production on a baseline profile (`infra/terraform/envs/prod/prod.tfvars.example`) with `min_replicas >= 1`.
+- Dev (`infra/terraform/envs/dev/dev.tfvars`) scales the API to zero when idle.
+- Production, when added, should keep `container_min_replicas >= 1`.
 - Increase replicas, DB SKU, and queue tier only when metrics show sustained demand.
 - Keep short log retention in dev and extend retention only for compliance or incident response needs.
 - Review Azure spend and utilization monthly before changing SKU tiers.

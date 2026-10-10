@@ -1,80 +1,74 @@
 # Terraform Infrastructure
 
-This folder provisions Azure infrastructure for the Athena backend.
+Athena's Azure resources. The resource group, log workspace, deploy identity, budgets, and access
+groups come from [`TechNToast/techntoast-platform`](https://github.com/TechNToast/techntoast-platform);
+this stack deploys into `rg-athena-<env>`.
 
-## Provisioned resources
+## Resources
 
-- Resource Group
-- Azure Container Registry (ACR)
-- Azure Container Apps Environment + Backend App
-- Azure Database for PostgreSQL Flexible Server + DB
-- Azure Service Bus Namespace + Queue
-- Azure Key Vault (RBAC enabled, purge protection enabled)
-- Log Analytics + Application Insights
+| Resource | Notes |
+|----------|-------|
+| Managed identities `id-athena-<env>-api`, `-migrate` | All service sign-in; no passwords or shared keys |
+| Container Registry | Admin user off; pulls by managed identity |
+| Container Apps environment + API | Scales to zero in dev; logs to the shared workspace |
+| Job `caj-athena-<env>-migrate` | `alembic upgrade head`, then grants the API its database role |
+| Job `caj-athena-<env>-ingest` | Athlete data upsert on a schedule (start by hand to seed) |
+| PostgreSQL Flexible Server 16 | Entra sign-in only; admins are the migrate identity and the operators group |
+| Key Vault | RBAC; holds `hf-token` |
+| Application Insights | Workspace-based, Entra auth only |
+| Service Bus (Basic) + `notifications` queue | Local auth off |
 
-## Usage
+## Deploy
+
+Infrastructure: **Actions → Terraform Apply → dev**. Pull requests that touch this folder get a
+plan comment.
+
+Code: pushing `backend/**` to `main` runs **Backend Deploy (Dev)**, which builds an image tagged with
+the commit, runs the migrate job with it, then switches the API and ingest job to it.
+
+Terraform ignores image changes after creation; the deploy workflow owns which image runs.
+
+## Run locally
 
 ```bash
-cd infra/terraform
-terraform init
-terraform plan -var-file=envs/dev/dev.tfvars.example
-terraform apply -var-file=envs/dev/dev.tfvars.example
+export AZURE_CONFIG_DIR=~/.azure-techntoast   # Tech & Toast tenant
+az login --tenant <tenant-id>
+export ARM_SUBSCRIPTION_ID=<subscription-id>
+export TF_VAR_log_analytics_workspace_id=<LOG_WORKSPACE_ID variable>
+export TF_VAR_operators_group_id=<OPERATORS_GROUP_ID variable>
 
-# Test profile
-terraform plan -var-file=envs/test/test.tfvars.example
-terraform apply -var-file=envs/test/test.tfvars.example
-
-# Production profile
-terraform plan -var-file=envs/prod/prod.tfvars.example
-terraform apply -var-file=envs/prod/prod.tfvars.example
+terraform init \
+  -backend-config="resource_group_name=<TF_STATE_RESOURCE_GROUP>" \
+  -backend-config="storage_account_name=<TF_STATE_STORAGE_ACCOUNT>" \
+  -backend-config="key=dev.tfstate"
+terraform plan -var-file=envs/dev/dev.tfvars
 ```
 
-## Notes
+## Hugging Face token
 
-- Set `postgres_admin_password` via secure secret injection (for example, TF_VAR_postgres_admin_password in CI).
-- Container App is configured with managed identity and ACR pull assignment.
-- Fill in `container_image` with your pushed backend image before apply.
+The API works without it (rules fallback). To turn on model insights:
 
-## CI authentication prerequisites
+```bash
+az keyvault secret set --vault-name kv-athena-dev-tnt --name hf-token --value "<token>"
+```
 
-`terraform plan` against the AzureRM provider requires authenticated Azure access. Before enabling the CI plan step for real deployments, configure GitHub Actions with Azure federation or a service principal.
+Then set `hf_token_enabled = true` in `envs/dev/dev.tfvars` and run Terraform Apply.
 
-Recommended path: GitHub OIDC with `azure/login`.
+## Database access for you
 
-Required GitHub Actions configuration:
+You're an administrator through the operators group. Connect with a token instead of a password:
 
-- `AZURE_CLIENT_ID`
-- `AZURE_TENANT_ID`
-- `AZURE_SUBSCRIPTION_ID`
-- `TF_VAR_postgres_admin_password`
+```bash
+export PGPASSWORD=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
+psql "host=psql-athena-dev-tnt.postgres.database.azure.com dbname=athena user='TNT Prod Operators' sslmode=require"
+```
 
-Required workflow capability:
+The server only accepts Azure-internal connections; add a temporary firewall rule for your IP and
+remove it afterwards.
 
-- `permissions: id-token: write`
+## Limitations
 
-Once those are configured, add an Azure login step before `terraform plan` so the AzureRM provider can resolve the tenant and subscription context.
-
-## Apply guardrail for test/prod
-
-The apply workflow exposes `dev`, `test`, and `prod` options. Non-dev applies are blocked by default.
-
-To allow `test` or `prod` applies:
-
-- Set repository variable `ENABLE_NON_DEV_APPLY=true`
-- Create matching GitHub Environments (`test`, `prod`) with approvals
-- Add OIDC federated credentials for `environment:test` and `environment:prod`
-
-## Cost-efficient dev profile
-
-The dev tfvars example is optimized for low traffic:
-
-- Container Apps scales to zero (`container_min_replicas = 0`)
-- ACR uses `Basic` SKU
-- Service Bus uses `Basic` SKU
-- Log Analytics retention is reduced to 7 days
-
-This keeps early costs lower while preserving secure defaults such as Key Vault purge protection and ACR anonymous pull disabled.
-
-## Production profile
-
-Use `envs/prod/prod.tfvars.example` as your production starting point. It keeps predictable baseline capacity (`min_replicas = 1`) and uses Standard SKUs where production resilience and throughput matter.
+- Public endpoints (Entra-gated) for Postgres, Key Vault, registry, and Service Bus. Private networking
+  needs a VNet and costs more; revisit before production.
+- No prod environment yet. Add `envs/prod/prod.tfvars` and the `prod` option in the apply workflow;
+  the platform already requires approval for the `prod` GitHub environment.

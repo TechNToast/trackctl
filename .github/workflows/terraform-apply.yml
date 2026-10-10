@@ -1,5 +1,7 @@
 name: Terraform Apply
 
+# Prod: the "prod" GitHub environment requires approval and only runs from main
+# (managed in techntoast-platform). Add prod here once envs/prod/prod.tfvars exists.
 on:
   workflow_dispatch:
     inputs:
@@ -10,185 +12,58 @@ on:
         type: choice
         options:
           - dev
-          - test
-          - prod
 
 concurrency:
-  group: terraform-apply-${{ inputs.environment || 'dev' }}
-  cancel-in-progress: true
+  group: terraform-apply-${{ inputs.environment }}
+  cancel-in-progress: false
 
 jobs:
   apply:
-    name: Terraform Apply (${{ inputs.environment || 'dev' }})
+    name: Terraform Apply (${{ inputs.environment }})
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'dev' }}
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       id-token: write
     env:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_postgres_admin_password: ${{ secrets.TF_VAR_POSTGRES_ADMIN_PASSWORD }}
-      TF_BACKEND_RESOURCE_GROUP: ${{ secrets.TF_BACKEND_RESOURCE_GROUP }}
-      TF_BACKEND_STORAGE_ACCOUNT: ${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}
-      TF_BACKEND_CONTAINER: ${{ secrets.TF_BACKEND_CONTAINER }}
-      TARGET_ENV: ${{ inputs.environment || 'dev' }}
-      ENABLE_NON_DEV_APPLY: ${{ vars.ENABLE_NON_DEV_APPLY || 'false' }}
-
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_log_analytics_workspace_id: ${{ vars.LOG_WORKSPACE_ID }}
+      TF_VAR_operators_group_id: ${{ vars.OPERATORS_GROUP_ID }}
+      TARGET_ENV: ${{ inputs.environment }}
     defaults:
       run:
         working-directory: infra/terraform
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Azure login
-        uses: azure/login@v2
+      - uses: hashicorp/setup-terraform@v3
         with:
-          client-id: ${{ env.AZURE_CLIENT_ID }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          terraform_wrapper: false
 
       - name: Terraform init
-        env:
-          ARM_USE_OIDC: true
-          ARM_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
-          ARM_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ env.AZURE_SUBSCRIPTION_ID }}
-          TF_BACKEND_RG: ${{ secrets.TF_BACKEND_RESOURCE_GROUP }}
-          TF_BACKEND_SA: ${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}
-          TF_BACKEND_CT: ${{ secrets.TF_BACKEND_CONTAINER }}
         run: |
-          terraform init \
-            -backend-config="resource_group_name=${TF_BACKEND_RG}" \
-            -backend-config="storage_account_name=${TF_BACKEND_SA}" \
-            -backend-config="container_name=${TF_BACKEND_CT}" \
-            -backend-config="key=${{ env.TARGET_ENV }}.tfstate"
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="key=${TARGET_ENV}.tfstate"
 
-      - name: Guardrail for non-dev apply
+      - name: Terraform plan
         run: |
-          if [ "${TARGET_ENV}" != "dev" ] && [ "${ENABLE_NON_DEV_APPLY}" != "true" ]; then
-            echo "Non-dev apply is currently disabled."
-            echo "To enable test/prod applies, set repository variable ENABLE_NON_DEV_APPLY=true"
-            echo "and ensure matching GitHub Environment + OIDC credentials exist for ${TARGET_ENV}."
-            exit 1
-          fi
-
-      - name: Import existing resources into state (if present)
-        env:
-          ARM_USE_OIDC: true
-          ARM_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
-          ARM_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ env.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          TFVARS_FILE="envs/${TARGET_ENV}/${TARGET_ENV}.tfvars.example"
-          if [ ! -f "$TFVARS_FILE" ]; then
-            echo "Missing tfvars file: $TFVARS_FILE"
-            echo "Create it before running apply for ${TARGET_ENV}."
-            exit 1
-          fi
-
-          RAW_SUFFIX=$(awk -F= '/^resource_name_suffix[[:space:]]*=/{print $2; exit}' "$TFVARS_FILE" | tr -d ' "')
-          NAME_SUFFIX=""
-          if [ -n "$RAW_SUFFIX" ]; then
-            NAME_SUFFIX="-$RAW_SUFFIX"
-          fi
-
-          RG="rg-athena-${TARGET_ENV}"
-          CAE_NAME="cae-athena-${TARGET_ENV}"
-          APPI_NAME="appi-athena-${TARGET_ENV}"
-          PSQL_NAME="psql-athena-${TARGET_ENV}${NAME_SUFFIX}"
-          KV_NAME="kv-athena-${TARGET_ENV}${NAME_SUFFIX}"
-
-          maybe_import() {
-            local address="$1"
-            local resource_id="$2"
-
-            if terraform state show "$address" >/dev/null 2>&1; then
-              echo "Already in state: $address"
-              return 0
-            fi
-
-            echo "Importing $address"
-            terraform import "$address" "$resource_id" || true
-          }
-
-          CAE_ID=$(az containerapp env show -g "$RG" -n "$CAE_NAME" --query id -o tsv 2>/dev/null || true)
-          if [ -n "$CAE_ID" ]; then
-            maybe_import "module.container_apps.azurerm_container_app_environment.this" "$CAE_ID"
-          fi
-
-          APPI_ID=$(az monitor app-insights component show -g "$RG" -a "$APPI_NAME" --query id -o tsv 2>/dev/null || true)
-          if [ -n "$APPI_ID" ]; then
-            maybe_import "module.observability.azurerm_application_insights.this" "$APPI_ID"
-          fi
-
-          KV_ID=$(az keyvault show -n "$KV_NAME" --query id -o tsv 2>/dev/null || true)
-          if [ -n "$KV_ID" ]; then
-            maybe_import "module.key_vault.azurerm_key_vault.this" "$KV_ID"
-          fi
-
-          PSQL_ID=$(az postgres flexible-server show -g "$RG" -n "$PSQL_NAME" --query id -o tsv 2>/dev/null || true)
-          if [ -n "$PSQL_ID" ]; then
-            maybe_import "module.postgres.azurerm_postgresql_flexible_server.this" "$PSQL_ID"
-          fi
-
-          if [ -z "$KV_ID" ]; then
-            KV_AVAILABLE=$(az keyvault check-name --name "$KV_NAME" --query nameAvailable -o tsv 2>/dev/null || echo true)
-            if [ "$KV_AVAILABLE" != "true" ]; then
-              echo "Key Vault name '$KV_NAME' is unavailable and not importable in this subscription."
-              echo "Set resource_name_suffix in $TFVARS_FILE (for example resource_name_suffix = \"a1\") and rerun."
-              exit 1
-            fi
-          fi
-
-          if [ -z "$PSQL_ID" ]; then
-            PSQL_AVAILABLE=$(az postgres flexible-server check-name-availability --name "$PSQL_NAME" --query nameAvailable -o tsv 2>/dev/null || echo true)
-            if [ "$PSQL_AVAILABLE" != "true" ]; then
-              echo "PostgreSQL server name '$PSQL_NAME' is unavailable and not importable in this subscription."
-              echo "Set resource_name_suffix in $TFVARS_FILE (for example resource_name_suffix = \"a1\") and rerun."
-              exit 1
-            fi
-          fi
+          set -o pipefail
+          terraform plan -input=false -no-color -out=tfplan -var-file="envs/${TARGET_ENV}/${TARGET_ENV}.tfvars" | tee plan.txt
+          {
+            echo '### Terraform plan'
+            echo '```'
+            grep -E '^\s+# |^Plan:|^No changes' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Terraform apply
-        env:
-          ARM_USE_OIDC: true
-          ARM_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
-          ARM_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ env.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          terraform apply \
-            -lock-timeout=60s \
-            -auto-approve \
-            -input=false \
-            -var-file=envs/${{ env.TARGET_ENV }}/${{ env.TARGET_ENV }}.tfvars.example
+        run: terraform apply -input=false -lock-timeout=60s tfplan
 
-      - name: Resolve backend URL
-        id: outputs
-        run: |
-          BACKEND_URL=$(terraform output -raw container_app_url)
-          echo "backend_url=https://${BACKEND_URL}" >> "$GITHUB_OUTPUT"
-          echo "Backend URL: https://${BACKEND_URL}"
-
-      - name: Health check backend
-        run: |
-          URL="${{ steps.outputs.outputs.backend_url }}/health"
-          echo "Checking ${URL}"
-
-          for attempt in 1 2 3 4 5 6 7 8; do
-            if curl -fsS "$URL" >/tmp/health.json; then
-              cat /tmp/health.json
-              exit 0
-            fi
-            echo "Health check attempt ${attempt} failed; retrying..."
-            sleep 10
-          done
-
-          echo "Backend health check failed after retries."
-          exit 1
+      - name: Outputs
+        run: terraform output -no-color >> "$GITHUB_STEP_SUMMARY"
