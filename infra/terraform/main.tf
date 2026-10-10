@@ -1,94 +1,124 @@
+# Athena runs inside a resource group, log workspace, and deploy identity owned by techntoast-platform.
+# Nothing here uses passwords or shared keys: every service-to-service call signs in with one of the
+# two managed identities below.
+#
+#   api      the API and the ingest job. Reads/writes data; reads secrets; sends/receives messages.
+#   migrate  the migration job. Database administrator; runs schema changes and grants the api role.
+
 locals {
-  base_name          = "${var.project}-${var.environment}"
-  global_name_suffix = trimspace(var.resource_name_suffix) != "" ? "-${trimspace(var.resource_name_suffix)}" : ""
-
-  tags = merge(var.tags, {
-    project     = var.project
-    environment = var.environment
-    managedBy   = "terraform"
-  })
+  name   = "athena-${var.environment}"
+  suffix = var.resource_name_suffix
+  tags   = data.azurerm_resource_group.this.tags
 }
 
-module "resource_group" {
-  source = "./modules/resource_group"
+data "azurerm_client_config" "current" {}
 
-  name     = "rg-${local.base_name}"
-  location = var.location
-  tags     = local.tags
+data "azurerm_resource_group" "this" {
+  name = "rg-athena-${var.environment}"
 }
 
-module "acr" {
-  source = "./modules/acr"
-
-  name                = replace("acr${var.project}${var.environment}", "-", "")
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  sku                 = var.acr_sku
+resource "azurerm_user_assigned_identity" "api" {
+  name                = "id-${local.name}-api"
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
   tags                = local.tags
 }
 
-module "observability" {
-  source = "./modules/observability"
-
-  log_analytics_workspace_name = "log-${local.base_name}"
-  application_insights_name    = "appi-${local.base_name}"
-  resource_group_name          = module.resource_group.name
-  location                     = module.resource_group.location
-  log_retention_days           = var.log_retention_days
-  tags                         = local.tags
+resource "azurerm_user_assigned_identity" "migrate" {
+  name                = "id-${local.name}-migrate"
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
+  tags                = local.tags
 }
 
-module "container_apps" {
-  source = "./modules/container_apps"
+# --- Registry ---
 
-  name                       = "ca-${local.base_name}-backend"
-  environment_name           = "cae-${local.base_name}"
-  resource_group_name        = module.resource_group.name
-  location                   = module.resource_group.location
-  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
-  container_image            = var.container_image
-  container_cpu              = var.container_cpu
-  container_memory           = var.container_memory
-  min_replicas               = var.container_min_replicas
-  max_replicas               = var.container_max_replicas
-  target_port                = 8080
-  acr_id                     = module.acr.id
-  acr_login_server           = module.acr.login_server
+resource "azurerm_container_registry" "this" {
+  name                   = replace("acr${local.name}${local.suffix}", "-", "")
+  resource_group_name    = data.azurerm_resource_group.this.name
+  location               = data.azurerm_resource_group.this.location
+  sku                    = "Basic"
+  admin_enabled          = false
+  anonymous_pull_enabled = false
+  tags                   = local.tags
+}
+
+resource "azurerm_role_assignment" "acr_pull" {
+  for_each = {
+    api     = azurerm_user_assigned_identity.api.principal_id
+    migrate = azurerm_user_assigned_identity.migrate.principal_id
+  }
+
+  scope                = azurerm_container_registry.this.id
+  role_definition_name = "AcrPull"
+  principal_id         = each.value
+  principal_type       = "ServicePrincipal"
+}
+
+# --- Secrets ---
+
+resource "azurerm_key_vault" "this" {
+  name                       = "kv-${local.name}-${local.suffix}"
+  resource_group_name        = data.azurerm_resource_group.this.name
+  location                   = data.azurerm_resource_group.this.location
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  rbac_authorization_enabled = true
+  purge_protection_enabled   = var.key_vault_purge_protection
+  soft_delete_retention_days = var.key_vault_purge_protection ? 90 : 7
   tags                       = local.tags
 }
 
-module "postgres" {
-  source = "./modules/postgres"
+resource "azurerm_role_assignment" "api_secrets" {
+  scope                = azurerm_key_vault.this.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.api.principal_id
+  principal_type       = "ServicePrincipal"
+}
 
-  server_name         = "psql-${local.base_name}${local.global_name_suffix}"
-  database_name       = "athena"
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  admin_username      = var.postgres_admin_username
-  admin_password      = var.postgres_admin_password
-  sku_name            = var.postgres_sku_name
-  storage_mb          = var.postgres_storage_mb
+# --- Telemetry (sends to the shared environment workspace; Entra auth only) ---
+
+resource "azurerm_application_insights" "this" {
+  name                         = "appi-${local.name}"
+  resource_group_name          = data.azurerm_resource_group.this.name
+  location                     = data.azurerm_resource_group.this.location
+  workspace_id                 = var.log_analytics_workspace_id
+  application_type             = "web"
+  local_authentication_enabled = false
+  tags                         = local.tags
+}
+
+resource "azurerm_role_assignment" "api_telemetry" {
+  scope                = azurerm_application_insights.this.id
+  role_definition_name = "Monitoring Metrics Publisher"
+  principal_id         = azurerm_user_assigned_identity.api.principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+# --- Messaging ---
+
+resource "azurerm_servicebus_namespace" "this" {
+  name                = "sb-${local.name}-${local.suffix}"
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
+  sku                 = "Basic"
+  local_auth_enabled  = false
+  minimum_tls_version = "1.2"
   tags                = local.tags
 }
 
-module "servicebus" {
-  source = "./modules/servicebus"
-
-  namespace_name      = "sb-${local.base_name}"
-  queue_name          = "notifications"
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  sku                 = var.servicebus_sku
-  tags                = local.tags
+resource "azurerm_servicebus_queue" "notifications" {
+  name                  = "notifications"
+  namespace_id          = azurerm_servicebus_namespace.this.id
+  max_size_in_megabytes = 1024
+  default_message_ttl   = "P14D"
 }
 
-module "key_vault" {
-  source = "./modules/key_vault"
+resource "azurerm_role_assignment" "api_servicebus" {
+  for_each = toset(["Azure Service Bus Data Sender", "Azure Service Bus Data Receiver"])
 
-  key_vault_name      = "kv-${local.base_name}${local.global_name_suffix}"
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  tenant_id           = module.container_apps.principal_tenant_id
-  object_id           = module.container_apps.principal_object_id
-  tags                = local.tags
+  scope                = azurerm_servicebus_namespace.this.id
+  role_definition_name = each.key
+  principal_id         = azurerm_user_assigned_identity.api.principal_id
+  principal_type       = "ServicePrincipal"
 }

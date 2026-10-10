@@ -1,24 +1,27 @@
-output "resource_group_name" {
-  value = module.resource_group.name
-}
-
 output "container_app_url" {
-  value = module.container_apps.latest_fqdn
+  value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
 }
 
-output "container_registry_login_server" {
-  value = module.acr.login_server
+output "container_app_name" {
+  value = azurerm_container_app.api.name
+}
+
+output "container_registry" {
+  value = azurerm_container_registry.this.name
+}
+
+output "migrate_job" {
+  value = one(azurerm_container_app_job.migrate[*].name)
+}
+
+output "ingest_job" {
+  value = one(azurerm_container_app_job.ingest[*].name)
+}
+
+output "key_vault" {
+  value = azurerm_key_vault.this.name
 }
 
 output "postgres_fqdn" {
-  value = module.postgres.fqdn
-}
-
-output "service_bus_namespace" {
-  value = module.servicebus.namespace_name
-}
-
-output "application_insights_connection_string" {
-  value     = module.observability.application_insights_connection_string
-  sensitive = true
+  value = one(azurerm_postgresql_flexible_server.this[*].fqdn)
 }

@@ -10,7 +10,7 @@ from alembic import context
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app import orm  # noqa: E402, F401  # registers all ORM models with Base
-from app.database import Base  # noqa: E402
+from app.database import Base, database_url, use_entra_password, uses_entra  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -23,14 +23,11 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Allow DATABASE_URL env var to override alembic.ini sqlalchemy.url.
-_db_url = os.environ.get("DATABASE_URL", "")
-if _db_url.startswith("postgresql+asyncpg://"):
-    # Alembic sync runner needs psycopg2 URL — swap driver and ssl param
-    _db_url = _db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    _db_url = _db_url.replace("?ssl=require", "?sslmode=require", 1)
+# DATABASE_URL or PGHOST/PGUSER override alembic.ini sqlalchemy.url (sync psycopg2 driver).
+_db_url = database_url("psycopg2")
 if _db_url:
-    config.set_main_option("sqlalchemy.url", _db_url)
+    # ConfigParser treats % as interpolation; URL-encoded names contain it.
+    config.set_main_option("sqlalchemy.url", _db_url.replace("%", "%%"))
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -74,6 +71,8 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    if uses_entra():
+        use_entra_password(connectable)
 
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
