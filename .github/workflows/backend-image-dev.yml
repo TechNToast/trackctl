@@ -56,6 +56,7 @@ jobs:
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Run migrations
+        if: env.MIGRATE_JOB != ''
         run: |
           az containerapp job update -n "$MIGRATE_JOB" -g "$RESOURCE_GROUP" --image "$IMAGE" --only-show-errors -o none
           EXECUTION=$(az containerapp job start -n "$MIGRATE_JOB" -g "$RESOURCE_GROUP" --query name -o tsv)
@@ -74,7 +75,9 @@ jobs:
       - name: Deploy API and ingest job
         run: |
           az containerapp update -n "$APP" -g "$RESOURCE_GROUP" --image "$IMAGE" --only-show-errors -o none
-          az containerapp job update -n "$INGEST_JOB" -g "$RESOURCE_GROUP" --image "$IMAGE" --only-show-errors -o none
+          if [ -n "$INGEST_JOB" ]; then
+            az containerapp job update -n "$INGEST_JOB" -g "$RESOURCE_GROUP" --image "$IMAGE" --only-show-errors -o none
+          fi
 
       - name: Health check
         run: |

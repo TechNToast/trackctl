@@ -11,11 +11,11 @@ output "container_registry" {
 }
 
 output "migrate_job" {
-  value = azurerm_container_app_job.migrate.name
+  value = one(azurerm_container_app_job.migrate[*].name)
 }
 
 output "ingest_job" {
-  value = azurerm_container_app_job.ingest.name
+  value = one(azurerm_container_app_job.ingest[*].name)
 }
 
 output "key_vault" {
@@ -23,5 +23,5 @@ output "key_vault" {
 }
 
 output "postgres_fqdn" {
-  value = azurerm_postgresql_flexible_server.this.fqdn
+  value = one(azurerm_postgresql_flexible_server.this[*].fqdn)
 }

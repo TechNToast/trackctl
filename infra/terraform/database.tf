@@ -3,6 +3,8 @@
 # (backend/scripts/grant_app_role.py) with read/write on tables and nothing else.
 
 resource "azurerm_postgresql_flexible_server" "this" {
+  count = var.database_enabled ? 1 : 0
+
   name                          = "psql-${local.name}-${local.suffix}"
   resource_group_name           = data.azurerm_resource_group.this.name
   location                      = data.azurerm_resource_group.this.location
@@ -26,8 +28,10 @@ resource "azurerm_postgresql_flexible_server" "this" {
 }
 
 resource "azurerm_postgresql_flexible_server_database" "athena" {
+  count = var.database_enabled ? 1 : 0
+
   name      = "athena"
-  server_id = azurerm_postgresql_flexible_server.this.id
+  server_id = azurerm_postgresql_flexible_server.this[0].id
   collation = "en_US.utf8"
   charset   = "UTF8"
 }
@@ -35,14 +39,18 @@ resource "azurerm_postgresql_flexible_server_database" "athena" {
 # Reachable from Azure services only (Container Apps has no fixed outbound IP without a VNet).
 # With password sign-in off, a connection still needs a valid Entra token for an admin or the api role.
 resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
+  count = var.database_enabled ? 1 : 0
+
   name             = "AllowAzureServices"
-  server_id        = azurerm_postgresql_flexible_server.this.id
+  server_id        = azurerm_postgresql_flexible_server.this[0].id
   start_ip_address = "0.0.0.0"
   end_ip_address   = "0.0.0.0"
 }
 
 resource "azurerm_postgresql_flexible_server_active_directory_administrator" "migrate" {
-  server_name         = azurerm_postgresql_flexible_server.this.name
+  count = var.database_enabled ? 1 : 0
+
+  server_name         = azurerm_postgresql_flexible_server.this[0].name
   resource_group_name = data.azurerm_resource_group.this.name
   tenant_id           = data.azurerm_client_config.current.tenant_id
   object_id           = azurerm_user_assigned_identity.migrate.principal_id
@@ -51,7 +59,9 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "mi
 }
 
 resource "azurerm_postgresql_flexible_server_active_directory_administrator" "operators" {
-  server_name         = azurerm_postgresql_flexible_server.this.name
+  count = var.database_enabled ? 1 : 0
+
+  server_name         = azurerm_postgresql_flexible_server.this[0].name
   resource_group_name = data.azurerm_resource_group.this.name
   tenant_id           = data.azurerm_client_config.current.tenant_id
   object_id           = var.operators_group_id

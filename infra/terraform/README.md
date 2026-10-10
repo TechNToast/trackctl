@@ -66,6 +66,13 @@ psql "host=psql-athena-dev-tnt.postgres.database.azure.com dbname=athena user='T
 The server only accepts Azure-internal connections; add a temporary firewall rule for your IP and
 remove it afterwards.
 
+## Running without the database
+
+`database_enabled = false` skips Postgres and both jobs; the API starts in stub mode. Dev uses this
+until Microsoft lifts the subscription's Postgres restriction in East US 2. To connect it, set
+`database_enabled = true`, run Terraform Apply, then run Backend Deploy (migrations) and start the
+ingest job once to seed.
+
 ## Limitations
 
 - Public endpoints (Entra-gated) for Postgres, Key Vault, registry, and Service Bus. Private networking

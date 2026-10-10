@@ -2,14 +2,15 @@
 # the deploy workflow owns which image runs, so image changes here are ignored after creation.
 
 locals {
-  db_env = {
-    PGHOST        = azurerm_postgresql_flexible_server.this.fqdn
-    PGDATABASE    = azurerm_postgresql_flexible_server_database.athena.name
+  db_env = var.database_enabled ? {
+    PGHOST        = azurerm_postgresql_flexible_server.this[0].fqdn
+    PGDATABASE    = azurerm_postgresql_flexible_server_database.athena[0].name
     DATABASE_AUTH = "entra"
-    ATHENA_ENV    = var.environment
-  }
+  } : {}
 
+  # Without database settings the API starts in stub mode (sample data, no DB-backed endpoints).
   api_env = merge(local.db_env, {
+    ATHENA_ENV                            = var.environment
     PGUSER                                = azurerm_user_assigned_identity.api.name
     AZURE_CLIENT_ID                       = azurerm_user_assigned_identity.api.client_id
     APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.this.connection_string
@@ -17,6 +18,7 @@ locals {
   })
 
   migrate_env = merge(local.db_env, {
+    ATHENA_ENV      = var.environment
     PGUSER          = azurerm_user_assigned_identity.migrate.name
     AZURE_CLIENT_ID = azurerm_user_assigned_identity.migrate.client_id
     APP_DB_ROLE     = azurerm_user_assigned_identity.api.name
@@ -112,6 +114,8 @@ resource "azurerm_container_app" "api" {
 }
 
 resource "azurerm_container_app_job" "migrate" {
+  count = var.database_enabled ? 1 : 0
+
   name                         = "caj-${local.name}-migrate"
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = data.azurerm_resource_group.this.name
@@ -165,6 +169,8 @@ resource "azurerm_container_app_job" "migrate" {
 
 # Idempotent upsert of athlete data. Runs on the schedule; start it by hand to seed a fresh database.
 resource "azurerm_container_app_job" "ingest" {
+  count = var.database_enabled ? 1 : 0
+
   name                         = "caj-${local.name}-ingest"
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = data.azurerm_resource_group.this.name

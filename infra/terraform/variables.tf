@@ -23,6 +23,12 @@ variable "operators_group_name" {
   default = "TNT Prod Operators"
 }
 
+variable "database_enabled" {
+  description = "Off: no Postgres or jobs; the API runs in stub mode. Turn on once the region allows Postgres."
+  type        = bool
+  default     = true
+}
+
 variable "container_image" {
   description = "First-deploy placeholder only. The deploy workflow sets the real image; Terraform ignores later changes."
   type        = string
