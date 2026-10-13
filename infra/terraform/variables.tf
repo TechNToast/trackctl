@@ -23,8 +23,14 @@ variable "operators_group_name" {
   default = "TNT Prod Operators"
 }
 
+variable "workload_location" {
+  description = "Region for Postgres and the Container Apps. Null uses the resource group's region."
+  type        = string
+  default     = null
+}
+
 variable "database_enabled" {
-  description = "Off: no Postgres or jobs; the API runs in stub mode. Turn on once the region allows Postgres."
+  description = "Off: no Postgres or jobs; the API runs in stub mode."
   type        = bool
   default     = true
 }

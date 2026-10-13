@@ -7,7 +7,7 @@ swiftly.pkg
 **/xcuserdata/
 roadmap.md
 athena-roadmap.md
-.venv/
+.venv
 .venv-*/
 .env
 backend/.env
