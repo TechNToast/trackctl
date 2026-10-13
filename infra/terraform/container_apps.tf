@@ -28,7 +28,7 @@ locals {
 resource "azurerm_container_app_environment" "this" {
   name                       = "cae-${local.name}"
   resource_group_name        = data.azurerm_resource_group.this.name
-  location                   = data.azurerm_resource_group.this.location
+  location                   = local.workload_location
   log_analytics_workspace_id = var.log_analytics_workspace_id
   tags                       = local.tags
 }
@@ -119,7 +119,7 @@ resource "azurerm_container_app_job" "migrate" {
   name                         = "caj-${local.name}-migrate"
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = data.azurerm_resource_group.this.name
-  location                     = data.azurerm_resource_group.this.location
+  location                     = local.workload_location
   replica_timeout_in_seconds   = 300
   replica_retry_limit          = 0
   tags                         = local.tags
@@ -174,7 +174,7 @@ resource "azurerm_container_app_job" "ingest" {
   name                         = "caj-${local.name}-ingest"
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = data.azurerm_resource_group.this.name
-  location                     = data.azurerm_resource_group.this.location
+  location                     = local.workload_location
   replica_timeout_in_seconds   = 600
   replica_retry_limit          = 1
   tags                         = local.tags

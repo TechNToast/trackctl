@@ -7,7 +7,7 @@ resource "azurerm_postgresql_flexible_server" "this" {
 
   name                          = "psql-${local.name}-${local.suffix}"
   resource_group_name           = data.azurerm_resource_group.this.name
-  location                      = data.azurerm_resource_group.this.location
+  location                      = local.workload_location
   version                       = "16"
   sku_name                      = var.postgres_sku_name
   storage_mb                    = var.postgres_storage_mb

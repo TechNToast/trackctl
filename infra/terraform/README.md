@@ -66,16 +66,23 @@ psql "host=psql-athena-dev-tnt.postgres.database.azure.com dbname=athena user='T
 The server only accepts Azure-internal connections; add a temporary firewall rule for your IP and
 remove it afterwards.
 
+## Regions
+
+The resource group, registry, Key Vault, Service Bus, and logs live in the resource group's region.
+`workload_location` places Postgres and the Container Apps somewhere else when that region can't host
+Postgres; they move together so queries never cross regions. Changing it recreates the container
+environment (the API URL changes) and the database (data is lost unless you dump and restore first).
+
 ## Running without the database
 
-`database_enabled = false` skips Postgres and both jobs; the API starts in stub mode. Dev uses this
-until Microsoft lifts the subscription's Postgres restriction in East US 2. To connect it, set
-`database_enabled = true`, run Terraform Apply, then run Backend Deploy (migrations) and start the
+`database_enabled = false` skips Postgres and both jobs; the API starts in stub mode. To connect it,
+set `database_enabled = true`, run Terraform Apply, then run Backend Deploy (migrations) and start the
 ingest job once to seed.
 
 ## Limitations
 
 - Public endpoints (Entra-gated) for Postgres, Key Vault, registry, and Service Bus. Private networking
   needs a VNet and costs more; revisit before production.
+- The API URL includes the region. Put a custom domain in front before any app depends on it.
 - No prod environment yet. Add `envs/prod/prod.tfvars` and the `prod` option in the apply workflow;
   the platform already requires approval for the `prod` GitHub environment.

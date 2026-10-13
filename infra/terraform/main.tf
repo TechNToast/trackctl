@@ -9,6 +9,9 @@ locals {
   name   = "athena-${var.environment}"
   suffix = var.resource_name_suffix
   tags   = data.azurerm_resource_group.this.tags
+
+  # The database and the containers that query it share a region; everything else stays with the resource group.
+  workload_location = coalesce(var.workload_location, data.azurerm_resource_group.this.location)
 }
 
 data "azurerm_client_config" "current" {}
